@@ -2,7 +2,7 @@
 
 dht DHT;
 
-#define DHT22_PIN 15
+#define DHT22_PIN 11
 
 //Global Variables
 float temperature = 0;
