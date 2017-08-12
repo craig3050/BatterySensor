@@ -4,12 +4,16 @@ dht DHT;
 
 #define DHT22_PIN 15
 
+//Global Variables
+float temperature = 0;
+float humidity = 0;
+
 void setup()
 {
   Serial.begin(115200);
 }
 
-void loop()
+void dht_22()
 {
   // READ DATA
   Serial.print("DHT22, \t");
@@ -29,12 +33,15 @@ void loop()
     Serial.print("Unknown error,\t"); 
     break;
   }
-  // DISPLAY DATA
-  Serial.print(DHT.humidity, 1);
-  Serial.print(",\t");
-  Serial.println(DHT.temperature, 1);
+  humidity = (DHT.humidity, 1);
+  temperature = (DHT.temperature, 1);
+}
 
+void loop()
+{
+  dht_22();
+  Serial.println(temperature);
+  Serial.println(humidity);
   delay(1000);
-
 }
 
