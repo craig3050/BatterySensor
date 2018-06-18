@@ -1,124 +1,109 @@
-#include "Arduino.h"
+//Craig3050
+//Home sensor wake-up and power control manager
+//18.06.2018
+
+
 #include <avr/sleep.h>
-#include <avr/power.h>
+#include <avr/interrupt.h>
 #include <avr/wdt.h>
 
 //Setup input output pins
-const int interruptPin = 2;
-const int esp_completed_pin = 3;
-const int pir_active_pin = 4;
-const int power_rail_switch = 5;
+const int interruptPin = 3; //PCINT3 = PB3 = Pin 2
+const int esp_completed_pin = 2; //PB2 = Pin 7
+const int pir_active_pin = 4; //PB4 = Pin 3
+const int power_rail_switch = 1; //PB1 = Pin 6
 volatile byte pir_active_flag = LOW;
-//Bits for delay
-unsigned long previousMillis = 0;  
-const long interval = 10000; 
-
-//specific item for sleep routine
-volatile int f_wdt=1;
+const long interval = 10000; //interval for delay in ms - approx 10 seconds
+int watchdog_counter = 0; //Set variable for watchdog counter
+const int watchdog_sleep_count  = 225; //this is approx 8sec *225 times = 30mins
 
 void setup() {
   pinMode(interruptPin, INPUT);
+  pinMode(esp_completed_pin, INPUT);
   pinMode(pir_active_pin, OUTPUT);
   pinMode(power_rail_switch, OUTPUT);
+  // 0=16ms, 1=32ms,2=64ms,3=128ms,4=250ms,5=500ms
+  // 6=1 sec,7=2 sec, 8=4 sec, 9= 8sec
+  setup_watchdog(9); // approximately 8 seconds sleep
+  }
+
+void deep_sleep() {
+  pir_active_flag = LOW; 
+
+  GIMSK |= _BV(PCIE);                     // Enable Pin Change Interrupts
+  PCMSK |= _BV(PCINT3);                   // Use PB3 as interrupt pin
+  ADCSRA &= ~_BV(ADEN);                   // ADC off
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);    // replaces above statement
+
+  sleep_enable();                         // Sets the Sleep Enable bit in the MCUCR Register (SE BIT)
+  sei();                                  // Enable interrupts
+  sleep_cpu();                            // sleep
+
+  cli();                                  // Disable interrupts
+  PCMSK &= ~_BV(PCINT3);                  // Turn off PB3 as interrupt pin
+  sleep_disable();                        // Clear SE bit
+  ADCSRA |= _BV(ADEN);                    // ADC on
+  } 
+
+void setup_watchdog(int ii) {
+  byte bb;
+  int ww;
+  if (ii > 9 ) ii=9;
+  bb=ii & 7;
+  if (ii > 7) bb|= (1<<5);
+  bb|= (1<<WDCE);
+  ww=bb;
+
+  MCUSR &= ~(1<<WDRF);
+  // start timed sequence
+  WDTCR |= (1<<WDCE) | (1<<WDE);
+  // set new watchdog timeout value
+  WDTCR = bb;
+  WDTCR |= _BV(WDIE);
+}
+
+ISR(PCINT3_vect) {
+  // This is called when the interrupt occurs
+  pir_active_flag = HIGH; 
+}
+
+ISR(WDT_vect) {
+  pir_active_flag = LOW;
+  watchdog_counter++;
+}
+
+void power_on() {
+  digitalWrite(power_rail_switch, HIGH); //switch on power rail
   
+  //define items for delay loop
+  unsigned long currentMillis = millis();
+  unsigned long previousMillis = 0;  
+  previousMillis = currentMillis;
+  
+  while (currentMillis - previousMillis <= interval)
+  {
+    currentMillis = millis(); //update current delay timer
+    if (digitalRead(esp_completed_pin) == HIGH) {
+    break;
+    }    
+  }
+  digitalWrite(power_rail_switch, LOW); //switch off power rail
 }
 
 void loop() {
-//switch on power rail
-  digitalWrite(power_rail_switch, HIGH);
-  
-  if (pir_active_flag == HIGH){
-    digitalWrite(pir_active_pin, HIGH);
-  }
-  else
+  if (watchdog_counter > watchdog_sleep_count)
   {
+    watchdog_counter = 0;
     digitalWrite(pir_active_pin, LOW);
+    power_on();
   }
-
-  if (esp_completed_pin == HIGH) {
+  else if (pir_active_flag == HIGH) {
+    digitalWrite(pir_active_pin, HIGH);
+    power_on();
+  }
+  else {
     deep_sleep();
   }
-
-  unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= interval) {
-    previousMillis = currentMillis;
-    deep_sleep();
-  }
 }
-
-void pirActive() {
-  pir_active_flag = HIGH;
-}
-
-void deep_sleep() {
-  pir_active_flag, LOW; 
-  digitalWrite(power_rail_switch, LOW);
-  //sleep for 30 mins
-  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-  sleep_enable();   
-  attachInterrupt(interruptPin, pirActive, RISING);
-  //attachInterrupt(digitalPinToInterrupt(interruptPin), pirActive, RISING);
-  sleep_mode();  
-  sleep_disable();   
-  detachInterrupt(interruptPin);  
-  //detachInterrupt(digitalPinToInterrupt(interruptPin)); 
-  // Re-enable the peripherals.
-  power_all_enable();
-}
-
-
-//Some sleep specific element
-// Watchdog Interrupt Service. This is executed when watchdog timed out.
-ISR(WDT_vect) {
-  if(f_wdt == 0) {
-    // here we can implement a counter the can set the f_wdt to true if
-    // the watchdog cycle needs to run longer than the maximum of eight
-    // seconds.
-    f_wdt=1;
-  }
-}
-
-// Setup the Watch Dog Timer (WDT)
-void setupWatchDogTimer() {
-  // The MCU Status Register (MCUSR) is used to tell the cause of the last
-  // reset, such as brown-out reset, watchdog reset, etc.
-  // NOTE: for security reasons, there is a timed sequence for clearing the
-  // WDE and changing the time-out configuration. If you don't use this
-  // sequence properly, you'll get unexpected results.
-
-  // Clear the reset flag on the MCUSR, the WDRF bit (bit 3).
-  MCUSR &= ~(1<<WDRF);
-
-  // Configure the Watchdog timer Control Register (WDTCSR)
-  // The WDTCSR is used for configuring the time-out, mode of operation, etc
-
-  // In order to change WDE or the pre-scaler, we need to set WDCE (This will
-  // allow updates for 4 clock cycles).
-
-  // Set the WDCE bit (bit 4) and the WDE bit (bit 3) of the WDTCSR. The WDCE
-  // bit must be set in order to change WDE or the watchdog pre-scalers.
-  // Setting the WDCE bit will allow updates to the pre-scalers and WDE for 4
-  // clock cycles then it will be reset by hardware.
-  WDTCSR |= (1<<WDCE) | (1<<WDE);
-
-  /**
-   *  Setting the watchdog pre-scaler value with VCC = 5.0V and 16mHZ
-   *  WDP3 WDP2 WDP1 WDP0 | Number of WDT | Typical Time-out at Oscillator Cycles
-   *  0    0    0    0    |   2K cycles   | 16 ms
-   *  0    0    0    1    |   4K cycles   | 32 ms
-   *  0    0    1    0    |   8K cycles   | 64 ms
-   *  0    0    1    1    |  16K cycles   | 0.125 s
-   *  0    1    0    0    |  32K cycles   | 0.25 s
-   *  0    1    0    1    |  64K cycles   | 0.5 s
-   *  0    1    1    0    |  128K cycles  | 1.0 s
-   *  0    1    1    1    |  256K cycles  | 2.0 s
-   *  1    0    0    0    |  512K cycles  | 4.0 s
-   *  1    0    0    1    | 1024K cycles  | 8.0 s
-  */
-  WDTCSR  = (1<<WDP3) | (0<<WDP2) | (0<<WDP1) | (1<<WDP0);
-  // Enable the WD interrupt (note: no reset).
-  WDTCSR |= _BV(WDIE);
-}
-
 
 
